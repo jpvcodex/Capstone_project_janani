@@ -198,3 +198,103 @@ else stayed). No nulls anywhere in it - double checked with isnull().sum().
 - `plots/` - all 6 charts (the 5 required ones + the heatmap)
 - `run_log.txt` - console output from actually running the script
 - `README.md` - this file
+
+# Part 2 - ML Models (Regression + Classification)
+
+This is the write-up for Part 2 of the capstone. I used the cleaned_data.csv file that came out of Part 1, so this whole thing depends on that file being there.
+
+To run it: `python part_2.py` (just make sure cleaned_data.csv is sitting in the same folder).
+
+## What I used as my labels
+
+I used `price` as the thing I'm trying to predict for regression, since it's the only continuous numeric column that makes sense to predict.
+
+For classification I didn't have a real binary column in the data, so I made one myself - I just split price at the median. So if a diamond's price is above the median it's labeled 1, otherwise 0. Median came out to about 2273.5. This actually gives an almost perfect 50/50 split which was nice because it meant I didn't have to deal with imbalance.
+
+## Encoding the categorical columns
+
+I had three categorical columns: cut, clarity, and color.
+
+For cut and clarity I just did label encoding (mapped them to numbers 0,1,2...) because these actually have a real order to them - like Fair is worse than Good which is worse than Very Good etc, and same idea for clarity (I1 being the worst all the way up to IF being flawless). So it made sense to keep that order as numbers.
+
+For color I didn't want to do that because there's no "column" that has a natural order for what I'm doing here - if I just numbered them 0-6 the model would think color G is like "3 steps more" than color D or whatever, which isn't really true, it would just be picking up a fake relationship that isn't really there. So instead I one-hot encoded color and dropped the first dummy column so I don't run into the dummy variable trap (multicollinearity).
+
+## Train/test split and scaling
+
+Split was 80/20 with random_state=42 so it's reproducible.
+
+For scaling - and this part is important - I only fit the StandardScaler on the training data, not on everything. If I fit it on the whole dataset (train + test together) that would basically be cheating a little, because then the scaler already "knows" info about the test set's mean and spread before I even train the model. That's data leakage. So I fit on X_train only, then just apply (transform) that same scaler to both train and test.
+
+## Regression - Linear vs Ridge
+
+| Model | MSE | R2 |
+|---|---|---|
+| Linear Regression | 2,299,438.83 | 0.8866 |
+| Ridge (alpha=1.0) | 2,300,689.85 | 0.8865 |
+
+Basically these two are almost identical for this dataset.
+
+Top 3 features by coefficient size were carat, x, and cut.
+
+Carat has a big positive coefficient (~4877) which makes total sense - bigger carat = way more expensive, no surprise there.
+
+x had a big negative coefficient (~-1033) which looks weird at first glance since you'd think a bigger diamond dimension should mean higher price too. But this is happening because carat, x, y, and z are all basically measuring "how big is this diamond" in different ways, so they're highly correlated with each other. When you put all of them into a linear model together it gets confused about which one to "credit" for the size effect, so it can end up giving one of them a negative number even though on its own it would clearly be positive. So I wouldn't read too much into that individual negative coefficient - it's more of a side effect of multicollinearity than some real "bigger x = cheaper" pattern.
+
+Ridge vs regular Linear Regression - alpha controls how much the model gets penalized for having large coefficients. Bigger alpha = more shrinkage. With alpha=1.0 here it barely changed anything vs plain OLS, so it seems like regularization wasn't really needed much for this problem - the model wasn't overfitting badly to begin with.
+
+## Classification - Logistic Regression
+
+Checked the class balance first: 3226 vs 3174 in the training set, so basically 50/50 (49.6% vs 50.4%). That's way above the 35% cutoff for "this needs balancing," so I didn't apply SMOTE or class_weight - didn't need to. (Side note: I originally wanted to try SMOTE just to show I could, but couldn't install imbalanced-learn because there was no internet in the sandbox environment I tested this in. Didn't matter in the end since the classes were already balanced by design from doing the median split.)
+
+Confusion matrix:
+
+|  | Predicted 0 | Predicted 1 |
+|---|---|---|
+| Actual 0 | 744 | 30 |
+| Actual 1 | 37 | 789 |
+
+Accuracy came out to 0.96, precision and recall both around 0.95-0.96 for each class. AUC = 0.9934, which is really high - basically the model can tell the two price groups apart almost perfectly using these features.
+
+Precision = TP / (TP + FP)
+Recall = TP / (TP + FN)
+
+For this specific problem I don't think one matters way more than the other - there's no real "this mistake is way worse than that mistake" situation here, it's just predicting if a diamond is above or below the median price, so I'd rather just look at F1 as the balanced overall score rather than pick precision or recall specifically.
+
+AUC of 0.99 basically means: if you grabbed one random "expensive" diamond and one random "cheap" diamond, the model would rank the expensive one higher about 99% of the time. That's a really strong result.
+
+### Threshold testing (0.3 to 0.7)
+
+| Threshold | Precision | Recall | F1 |
+|---|---|---|---|
+| 0.30 | 0.923 | 0.973 | 0.948 |
+| 0.40 | 0.951 | 0.965 | 0.958 |
+| 0.50 | 0.963 | 0.955 | 0.959 |
+| 0.60 | 0.973 | 0.942 | 0.957 |
+| 0.70 | 0.976 | 0.927 | 0.951 |
+
+Best F1 is right at the default 0.50 threshold. Makes sense given the classes are so balanced and well-separated - moving the threshold up or down just trades precision for recall without any real gain. Since I already said neither error type matters more here, I'd just leave the threshold at 0.5.
+
+## Regularization test - C=1.0 vs C=0.01
+
+| Model | Precision | Recall | AUC |
+|---|---|---|---|
+| C=1.0 | 0.963 | 0.955 | 0.9934 |
+| C=0.01 | 0.967 | 0.950 | 0.9933 |
+
+C is basically the opposite of alpha in Ridge - smaller C means stronger regularization (more shrinkage). Even with really strong regularization (C=0.01) the model barely changed at all. This tells me the classes in this dataset are just really cleanly separated by these features, so it doesn't matter much how hard you regularize, the model still does great.
+
+### Bootstrap test on the AUC difference
+
+Did 500 bootstrap resamples of the test set to see if C=1.0 is actually meaningfully better than C=0.01 or if that tiny difference is just noise.
+
+- Mean AUC difference: 0.0002
+- 95% CI: [-0.0001, 0.0004]
+
+Since this interval includes 0, that means the "advantage" of C=1.0 isn't statistically reliable - it could easily just be random variation from the specific test set I happened to get. So realistically, either C value would be fine to use here.
+
+## Files in this folder
+
+- part_2.py - all the code
+- cleaned_data.csv - the input from Part 1
+- plots/07_roc_curve.png - ROC curve plot
+- part2_output.log - the full printed output from running it top to bottom
