@@ -292,6 +292,185 @@ Did 500 bootstrap resamples of the test set to see if C=1.0 is actually meaningf
 
 Since this interval includes 0, that means the "advantage" of C=1.0 isn't statistically reliable - it could easily just be random variation from the specific test set I happened to get. So realistically, either C value would be fine to use here.
 
+# Part 3 - Ensembles, Tuning, and the Full Pipeline
+
+This picks up right where Part 2 left off. Same dataset (cleaned_data.csv), same features, same train/test split (80/20, random_state=42), same classification target (price above/below median). I just rebuilt that split at the top of part_3.py so the script can run on its own without needing to import Part 2.
+
+Run it with: `python part_3.py` (needs cleaned_data.csv in the same folder). Fair warning - the GridSearchCV step takes a little while to run (about 40 seconds on my machine) since it's fitting 90 different Random Forests.
+
+## Decision tree - no limits
+
+First I just let a Decision Tree grow with no restrictions at all (max_depth=None).
+
+- Train accuracy: 1.0000
+- Test accuracy: 0.9337
+- Gap: 0.066
+
+Yeah, that's overfitting. Getting literally 100% on the training data is basically a red flag on its own - it means the tree memorized the training rows instead of learning general patterns. Decision trees do this because of how they're built: at every split they just greedily pick whatever split looks best right now for the data in front of them, and they never go back and reconsider earlier splits once they're made. So if you don't stop it, it'll just keep splitting deeper and deeper until every single training point ends up in its own tiny leaf - which is exactly what "memorizing" looks like. That's why trees are called high variance models - a small change in the training data can produce a totally different tree.
+
+## Decision tree - controlled
+
+Same tree but with max_depth=5 and min_samples_split=20 this time.
+
+- Train accuracy: 0.9652
+- Test accuracy: 0.9556
+- Gap: 0.0095
+
+Way better. The gap basically disappeared, dropping from 6.6% down to under 1%.
+
+max_depth just caps how many levels deep the tree is allowed to go, so it can't keep carving out smaller and smaller regions for individual training points - this trades a little bit of bias for a big reduction in variance. min_samples_split says "don't even bother splitting a node if it has fewer than 20 samples in it," which stops the tree from making splits based on tiny groups of points that might just be noise rather than a real pattern.
+
+## Gini vs Entropy
+
+Trained two trees at max_depth=5, one with each criterion:
+
+- Gini: 0.9556 test accuracy
+- Entropy: 0.9550 test accuracy
+
+Basically a tie, entropy is a hair lower but not in any meaningful way.
+
+Gini impurity formula: 1 - sum(p_i^2)
+Entropy formula: -sum(p_i * log2(p_i))
+
+Both of these are just measuring "how mixed up are the classes in this node." If a node has Gini = 0, that means every single sample in that node belongs to the same class - it's a "pure" node, there's no mixing at all. The tree is trying to pick splits that get impurity as close to 0 as possible at each step.
+
+## Random Forest
+
+n_estimators=100, max_depth=10:
+
+- Train accuracy: 0.9889
+- Test accuracy: 0.9575
+- Test AUC: 0.9924
+
+Top 5 features by importance:
+
+| Feature | Importance |
+|---|---|
+| x | 0.325 |
+| y | 0.263 |
+| z | 0.252 |
+| carat | 0.118 |
+| table | 0.013 |
+
+So basically x, y, z, and carat dominate everything else combined - which makes total sense since these are all just different ways of measuring how big/heavy the diamond is, and size is obviously the main driver of price.
+
+How Random Forest actually gets these importance numbers: for every single split, in every single tree, it tracks how much that split reduced the Gini impurity. Then it averages that reduction across all the trees for each feature. So a feature that consistently helps split the classes apart cleanly across lots of trees ends up with a high importance score. This is different from a linear regression coefficient, because a regression coefficient tells you the size AND direction of a feature's effect (does it push the prediction up or down, and by how much), while feature importance in a forest is just "how useful was this feature for making good splits" - it doesn't tell you direction at all, just how much the model relied on it.
+
+Quick note on how Random Forest / bagging works in general: each individual tree in the forest is trained on a bootstrap sample - basically a random sample of the training rows drawn with replacement, so some rows show up multiple times and some don't show up at all in that particular tree's training set. On top of that, at every split, the tree is only allowed to consider a random subset of the features (roughly sqrt of the total number of features) instead of all of them. Both of these tricks make the individual trees less correlated with each other - they end up a little different from one another since they saw different data and different feature options. Then when you average all their predictions together, the individual trees' mistakes tend to cancel out, which is why the forest as a whole ends up with way lower variance than any single deep tree would have on its own.
+
+## Gradient Boosting
+
+n_estimators=100, learning_rate=0.1, max_depth=3:
+
+- Train accuracy: 0.9694
+- Test accuracy: 0.9556
+- Test AUC: 0.9919
+
+Pretty comparable to the Random Forest, slightly lower AUC but really close.
+
+## Feature ablation - what if I drop the useless features?
+
+Looked at the Random Forest importances above and pulled out the 5 lowest ones, which turned out to be color_G, color_F, color_I, color_J, and color_H - basically all the color dummy columns.
+
+Trained a new Random Forest with those 5 columns removed:
+
+- Full model (13 features) test AUC: 0.9924
+- Reduced model (8 features) test AUC: 0.9920
+
+Barely any difference (-0.0005). So these color columns really weren't adding much - the model does basically just as well without them. This makes sense given how tiny their importance scores were compared to x/y/z/carat.
+
+What this means for actually deploying something: if you can drop 5 out of 13 features and lose basically nothing in AUC, that's a pretty easy call to make a simpler model. Fewer features means faster predictions, less data you need to collect/store/maintain going forward, and one less thing that can break (like a missing color value causing an error). The only reason you wouldn't do this is if the AUC drop had actually been noticeable - then you'd have to weigh whether that small performance hit is worth the simplicity gain. Here it's a pretty clear "yes, drop them."
+
+## Cross-validated comparison (5-fold)
+
+| Model | CV Mean AUC | CV Std AUC |
+|---|---|---|
+| Logistic Regression | 0.9950 | 0.0002 |
+| Decision Tree (max_depth=5) | 0.9905 | 0.0012 |
+| Random Forest | 0.9937 | 0.0008 |
+| Gradient Boosting | 0.9939 | 0.0010 |
+
+Why bother with cross-validation instead of just trusting the one train/test split from Part 2? Because a single split can just get lucky or unlucky depending on which rows happened to land in the test set. If I did 5 different splits and averaged the results, I get a much better sense of how the model performs on average, plus I get a standard deviation which tells me how much that performance actually varies depending on which rows end up in the test fold. A model that's stable at 0.994 +/- 0.0002 (like Logistic Regression here) is more trustworthy than one that might range more widely.
+
+Interesting that plain Logistic Regression actually comes out on top here in CV - it seems like this problem is simple/linear enough that a linear model handles it just as well or better than the more complex ensemble methods.
+
+## GridSearchCV tuning on Random Forest
+
+Grid:
+```
+n_estimators: [50, 100, 200]
+max_depth: [5, 10, None]
+min_samples_leaf: [1, 5]
+```
+
+That's 3 x 3 x 2 = 18 different combinations, and since I used 5-fold CV that's 18 x 5 = 90 total model fits that GridSearchCV had to run.
+
+Best params it found: n_estimators=200, max_depth=None, min_samples_leaf=5
+Best CV AUC: 0.9943
+
+Grid Search vs Randomized Search - Grid Search is exhaustive, it tries literally every single combination in the grid, so you're guaranteed to find the best combo within the grid you defined, but the cost grows really fast (multiplicatively) as you add more parameters or more values per parameter. Randomized Search instead just randomly samples a fixed number of combinations from the grid (or from distributions), so it's way cheaper computationally, and honestly for larger grids it often finds a combo that's nearly as good, just not guaranteed to be the actual best one. For a grid this small (18 combos) doing the full Grid Search wasn't really a big deal, but if I'd added a couple more hyperparameters this could've blown up fast and Randomized Search would've made more sense.
+
+## Manual learning curve
+
+Took the best pipeline from GridSearchCV and re-trained it from scratch on 20%, 40%, 60%, 80%, and 100% of the training data.
+
+| Training fraction | Training AUC | Test AUC |
+|---|---|---|
+| 0.2 | 0.9981 | 0.9923 |
+| 0.4 | 0.9979 | 0.9926 |
+| 0.6 | 0.9980 | 0.9923 |
+| 0.8 | 0.9981 | 0.9926 |
+| 1.0 | 0.9980 | 0.9932 |
+
+Training AUC basically doesn't move at all, it just stays right around 0.998 the whole time regardless of how much data I give it. That's actually a little different from what I'd normally expect for a high variance model (usually training performance drops off as you add more data, because it gets harder for the model to fit everything perfectly). Here the Random Forest is just so powerful that it fits the training set almost perfectly no matter how much of it I give it.
+
+Test AUC does creep up a tiny bit as training data increases, from about 0.9923 at 20% up to 0.9932 at 100%, but that's a pretty small improvement over a 5x increase in data.
+
+My take: this looks more like the model has basically hit its ceiling already (capacity/model-limited) rather than being held back by lack of data. If it were really data-limited I'd expect to see a bigger, more obvious upward trend in test AUC as I added more rows. Since it's already sitting at 0.993 and barely moving, I don't think throwing a bunch more training data at this specific model/feature set is going to buy much more performance - the features themselves (mainly carat and the size dimensions) already explain almost all of the signal that separates the two price classes.
+
+## Saving the model
+
+Saved the tuned pipeline with joblib:
+
+```python
+import joblib
+joblib.dump(best_pipeline, 'best_model.pkl')
+```
+
+And to check it actually works after reloading:
+
+```python
+import joblib
+loaded_model = joblib.load('best_model.pkl')
+sample_rows = X_test.iloc[:2]
+preds = loaded_model.predict(sample_rows)
+probs = loaded_model.predict_proba(sample_rows)[:, 1]
+print(preds, probs)
+```
+
+Ran this and it worked fine - predicted class 1 for both sample rows with probabilities around 0.999 and 0.9986, so very confident predictions on those two.
+
+`best_model.pkl` is about 3.3 MB, so it's included directly in the repo (well under the 100MB limit that would've needed a regeneration script instead).
+
+## Final comparison across everything (Part 2 + Part 3)
+
+| Model | CV Mean AUC | CV Std AUC | Test AUC |
+|---|---|---|---|
+| Logistic Regression | 0.9950 | 0.0002 | 0.9934 |
+| Decision Tree (max_depth=5) | 0.9905 | 0.0012 | 0.9900 |
+| Random Forest (n=100, depth=10) | 0.9937 | 0.0008 | 0.9924 |
+| Gradient Boosting | 0.9939 | 0.0010 | 0.9919 |
+| Tuned RF (GridSearchCV best) | 0.9944 | - | 0.9932 |
+
+**My pick: Logistic Regression.** It's honestly right at the top on both CV mean AUC and test AUC, has the lowest variance across folds by a good margin (std of 0.0002 vs 0.0008-0.0012 for the tree-based models), and it's way simpler and faster to train, run, and explain to a client than a tuned 200-tree Random Forest. Given that the extra complexity of the ensemble methods isn't actually buying any real improvement in this case (they're all sitting in basically the same 0.99-ish AUC range), I'd rather ship the simplest model that gets the job done. If AUC ever needed to be squeezed out that last little bit for some reason, the tuned Random Forest would be the next thing I'd reach for, but for this dataset it's not really worth the added complexity.
+
+## Files in this folder
+
+- part_3.py - all the code for this part
+- cleaned_data.csv - input from Part 1
+- best_model.pkl - the saved, tuned Random Forest pipeline
+- part3_output.log - full console output from running it top to bottom
+
 ## Files in this folder
 
 - part_2.py - all the code
