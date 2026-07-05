@@ -292,6 +292,14 @@ Did 500 bootstrap resamples of the test set to see if C=1.0 is actually meaningf
 
 Since this interval includes 0, that means the "advantage" of C=1.0 isn't statistically reliable - it could easily just be random variation from the specific test set I happened to get. So realistically, either C value would be fine to use here.
 
+## Files in this folder
+
+- part_2.py - all the code
+- cleaned_data.csv - the input from Part 1
+- plots/07_roc_curve.png - ROC curve plot
+- part2_output.log - the full printed output from running it top to bottom
+
+- 
 
 # Part 3 - Ensembles, Tuning, and the Full Pipeline
 
@@ -472,9 +480,102 @@ Ran this and it worked fine - predicted class 1 for both sample rows with probab
 - best_model.pkl - the saved, tuned Random Forest pipeline
 - part3_output.log - full console output from running it top to bottom
 
+
+
+# Part 4 - LLM-Powered Feature
+
+**Track chosen: (C) Model Prediction Explanation Pipeline**
+
+I picked this one because it plugs directly into the model I already built and saved in Part 3 (best_model.pkl) - felt like the most natural way to tie everything together instead of starting a brand new dataset thread just for this part.
+
+## Quick heads up about running this one
+
+This script is written to hit a real LLM API over HTTP (OpenRouter-style: POST to `/chat/completions` with `model`, `messages`, `temperature`, `max_tokens` in the JSON body, and an `Authorization: Bearer <key>` header). To actually get real model responses, set an environment variable before running:
+
+```
+export LLM_API_KEY="sk-..."      # mac/linux
+setx LLM_API_KEY "sk-..."        # windows (open a new terminal after)
+```
+
+If that variable isn't set - like when I tested this in a sandboxed environment with no internet access - `call_llm()` automatically falls back to a mock response generator instead of crashing. Every mocked response gets tagged with `[MOCK]` in the printed output so it's obvious it's not a real API call. The rest of the pipeline (guardrail, JSON parsing, schema validation, tables) runs exactly the same either way, real or mocked, since it all just operates on whatever string comes back from `call_llm()`.
+
+Same idea for the `jsonschema` package - if it's not installed (again, no internet in my test environment to pip install it), the script falls back to a small hand-written validator that checks the same things (required fields present, correct scalar types, enum values match). On a normal machine just run `pip install jsonschema` and the real library takes over automatically.
+
+## The pipeline
+
+1. Load `best_model.pkl` from Part 3 with `joblib.load()`.
+2. For each of 3 hand-crafted diamonds, `encode_record()` turns the raw feature dict into the exact same ordinal + one-hot encoded row the model was trained on, then I call `.predict()` and `.predict_proba()`.
+3. Build a prompt containing the feature values, the predicted class, and the predicted probability.
+4. Run the PII guardrail on that prompt.
+5. If it passes, call the LLM and ask for a JSON explanation.
+6. Parse + validate the JSON response against a schema, falling back to a null-filled dict if anything goes wrong.
+
+## System prompt (verbatim)
+
+```
+You are a pricing-model explainability assistant for a diamond retailer. You will be given the feature values of a diamond, the model's predicted price class (0 = below median price, 1 = above median price), and the model's predicted probability for that class. Respond with ONLY a single valid JSON object (no markdown fences, no extra commentary) with exactly these five fields: "prediction_label" (string, e.g. "above-median price" or "below-median price"), "confidence_level" (one of "low", "medium", "high"), "top_reason" (string, the single most influential feature/pattern), "second_reason" (string, the second most influential feature/pattern), and "next_step" (string, a short recommended action for a pricing analyst). Do not include any keys other than these five.
+```
+
+## User prompt template
+
+```
+Diamond feature values:
+{feature_json}
+
+Predicted class: {pred_class}
+Predicted probability (class {pred_class}): {pred_prob:.4f}
+
+Explain this prediction as a JSON object following the required schema.
+```
+
+`{feature_json}` gets swapped in as a pretty-printed JSON dump of the diamond's feature dict, and `{pred_class}` / `{pred_prob}` come straight from the model's own outputs.
+
+## Why temperature=0
+
+I used temperature=0 for the main explanation pipeline because this is a structured-output task - I need the response to actually be valid JSON matching a fixed schema every single time, not creative writing. At temperature=0 the model always just picks the single most likely next token at each step, so for the same input you basically always get the same (or extremely close to the same) output. That consistency matters here because these explanations might feed into an automated system downstream that expects the JSON to parse cleanly every time - I don't want the model getting "creative" with the format and breaking my parser.
+
+## Temperature A/B comparison (temp=0 vs temp=0.7)
+
+| Diamond | Output at temp=0 | Output at temp=0.7 | Key difference |
+|---|---|---|---|
+| 1 (carat=1.5, Ideal, class=1) | top_reason: carat is large / second_reason: x/y/z dims large | top_reason: x/y/z dims large / second_reason: carat is large | Same underlying facts, but temp=0.7 swapped which reason is listed first |
+| 2 (carat=0.25, Fair, class=0) | top_reason: carat is small / second_reason: x/y/z dims small | top_reason: cut grade is lower / second_reason: x/y/z dims small | temp=0.7 picked a different "top" reason entirely (cut instead of carat) |
+| 3 (carat=0.55, Good, class=1) | top_reason: carat is large / second_reason: x/y/z dims large | top_reason: x/y/z dims large / second_reason: cut grade is high | Same swap pattern plus a different second reason |
+
+Why this happens: at temperature=0 the model always deterministically grabs the highest-probability next token, so given the exact same prompt it should produce the exact same (or nearly the exact same) response every time - great for reproducibility. At temperature=0.7 the model instead samples from a wider slice of the probability distribution over possible next tokens, so tokens that were "pretty likely but not the top pick" get a real chance of being chosen. That's why the core facts stay correct (still correctly says "above-median" or "below-median," still correctly identifies which features matter) but the exact wording, ordering, and which specific reason gets called "top" vs "second" can shift around run to run.
+
+## Guardrail test
+
+| Input | Contains PII? | Result |
+|---|---|---|
+| "Please contact John at john.doe@example.com about this diamond." | Yes (email) | **Blocked** - printed "Input blocked: PII detected." and returned None, never even attempted the LLM call |
+| "Here are the feature values for a diamond to explain." | No | Proceeded normally, LLM call went through |
+
+Worked exactly as expected both times.
+
+## Structured output validation
+
+Schema requires 5 scalar fields, all required:
+- `prediction_label` (string)
+- `confidence_level` (string, one of low/medium/high)
+- `top_reason` (string)
+- `second_reason` (string)
+- `next_step` (string)
+
+After every LLM call: strip whitespace -> `json.loads()` inside try/except for `JSONDecodeError` -> `jsonschema.validate()` inside try/except for `ValidationError`. If either step fails, I return a fallback dict with all 5 fields set to `None` and print the error so it's not silently swallowed.
+
+## Demo table - 3 diamonds, end-to-end
+
+| Feature Input | Predicted Class | Probability | Explanation JSON | Validation Status |
+|---|---|---|---|---|
+| carat=1.50, Ideal, G, VS1, table=57 | 1 (above median) | 1.0000 | {prediction_label: above-median price, confidence_level: high, top_reason: carat is large, second_reason: x/y/z dims large, next_step: verify with appraisal} | pass |
+| carat=0.25, Fair, J, SI2, table=60 | 0 (below median) | 1.0000 | {prediction_label: below-median price, confidence_level: high, top_reason: carat is small, second_reason: x/y/z dims small, next_step: verify with appraisal} | pass |
+| carat=0.55, Good, H, VS2, table=58 | 1 (above median) | 0.8802 | {prediction_label: above-median price, confidence_level: medium, top_reason: carat is large, second_reason: x/y/z dims large, next_step: verify with appraisal} | pass |
+
+All 3 passed validation cleanly in my test run. None of the 3 inputs contained PII so none of them got blocked by the guardrail (that's demonstrated separately above with the dedicated email test).
+
 ## Files in this folder
 
-- part_2.py - all the code
-- cleaned_data.csv - the input from Part 1
-- plots/07_roc_curve.png - ROC curve plot
-- part2_output.log - the full printed output from running it top to bottom
+- part_4.py - all the code
+- best_model.pkl - the model from Part 3 (reused here, not retrained)
+- part4_output.log - full console output from a top-to-bottom run
