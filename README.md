@@ -292,6 +292,7 @@ Did 500 bootstrap resamples of the test set to see if C=1.0 is actually meaningf
 
 Since this interval includes 0, that means the "advantage" of C=1.0 isn't statistically reliable - it could easily just be random variation from the specific test set I happened to get. So realistically, either C value would be fine to use here.
 
+
 # Part 3 - Ensembles, Tuning, and the Full Pipeline
 
 This picks up right where Part 2 left off. Same dataset (cleaned_data.csv), same features, same train/test split (80/20, random_state=42), same classification target (price above/below median). I just rebuilt that split at the top of part_3.py so the script can run on its own without needing to import Part 2.
