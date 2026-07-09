@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Part 1 — Data Cleaning & EDA
 
 ## What this does
@@ -71,3 +72,6 @@ Outputs: `cleaned_data.csv` (needed for Parts 2 and 3), `raw_diamonds.csv`
 - IQR flagged 6.56% of rows as price outliers and 3.86% as carat outliers.
   Left them in on purpose — for diamonds, extreme values are usually real,
   not data entry errors.
+=======
+
+>>>>>>> c0e3192eae32c4048c4d462f1b10b2a1607720e1
