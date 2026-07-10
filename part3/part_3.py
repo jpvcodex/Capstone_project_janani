@@ -252,7 +252,7 @@ def task7_serialize(best_pipeline, X_test, feature_names):
 
 
 def main():
-    cleaned_path = os.path.join(HERE, "cleaned_data.csv")
+    cleaned_path = os.path.join(HERE, "..", "part1", "cleaned_data.csv")
     (X, X_train, X_test, X_train_scaled, X_test_scaled,
      y_clf_train, y_clf_test) = load_and_prepare(cleaned_path)
     feature_names = X.columns

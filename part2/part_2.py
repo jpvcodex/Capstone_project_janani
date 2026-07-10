@@ -288,7 +288,8 @@ def task6b_bootstrap_auc_ci(y_clf_test, proba_c1, proba_c001, n_boot=500):
 
 
 def main():
-    cleaned_path = os.path.join(HERE, "cleaned_data.csv")
+    cleaned_path = os.path.join(HERE, "..", "part1", "cleaned_data.csv")
+    
     df, X, y_reg, y_clf = task1_load_and_define(cleaned_path)
     X_enc = task2_encode(X)
     (X_train, X_test, y_reg_train, y_reg_test,
