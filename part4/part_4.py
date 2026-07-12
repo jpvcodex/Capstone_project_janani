@@ -110,8 +110,7 @@ def _mock_llm_response(system_prompt, user_prompt, temperature):
 
 def call_llm(system_prompt, user_prompt, temperature=0.0, max_tokens=512):
     api_key = os.environ.get("LLM_API_KEY")
-    print(f"[DEBUG] api_key loaded: {repr(api_key)}")
-
+    
     if not api_key:
         print("[call_llm] No LLM_API_KEY environment variable found - using MOCK response.")
         return _mock_llm_response(system_prompt, user_prompt, temperature)

@@ -241,10 +241,10 @@ def task7_serialize(best_pipeline, X_test, feature_names):
 
     # --- reload and predict demo ---
     loaded_model = joblib.load(model_path)
-    sample_rows = X_test.iloc[:2].copy()
+    sample_rows = X_test.iloc[:5].copy()
     preds = loaded_model.predict(sample_rows)
     probs = loaded_model.predict_proba(sample_rows)[:, 1]
-    print("\nReload-and-predict demo on 2 hand-picked test rows:")
+    print("\nReload-and-predict demo on 5 hand-picked test rows:")
     print(sample_rows)
     print(f"Predicted classes: {preds}")
     print(f"Predicted probabilities (class=1): {probs}")
