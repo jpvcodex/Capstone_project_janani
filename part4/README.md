@@ -96,3 +96,29 @@ python part_4.py
   same structure as the real LLM path, so I could still verify the rest of
   the pipeline — guardrail, encoding, validation — end to end even without
   hitting the actual API.
+
+## Demonstration Results
+
+### 3-record pipeline run (temperature = 0.0)
+
+| # | Input (Diamond) | LLM Output | Valid JSON | Pass/Block |
+|---|---|---|---|---|
+| 1 | carat=1.5, cut=Ideal, color=G, clarity=VS1 | prediction_label: above-median price, confidence_level: high, top_reason: Ideal cut quality | Pass | Proceeded (clean input) |
+| 2 | carat=0.25, cut=Fair, color=J, clarity=SI2 | prediction_label: below-median price, confidence_level: high, top_reason: Low carat weight | Pass | Proceeded (clean input) |
+| 3 | carat=0.55, cut=Good, color=H, clarity=VS2 | prediction_label: below-median price, confidence_level: high, top_reason: low carat weight | Pass | Proceeded (clean input) |
+
+### PII guardrail test (2 inputs)
+
+| Input | PII Detected? | Result |
+|---|---|---|
+| Contains an email address | Yes | Blocked - call never reached the LLM, returned None |
+| Clean feature description | No | Proceeded - LLM responded normally |
+
+### Temperature A/B comparison (temp=0.0 vs temp=0.7)
+
+At temperature 0, the LLM gives concise, consistent wording. At temperature
+0.7, phrasing becomes more elaborate and occasionally shifts which feature
+is named as the top reason. The prediction_label and confidence_level never
+changed across either temperature, since those come directly from the
+deterministic ML model, not the LLM - temperature only affects how the
+explanation is phrased, not the underlying prediction itself.
